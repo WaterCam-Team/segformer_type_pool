@@ -1,0 +1,7 @@
+# The checkpoint is 798 MB -- distributed via Google Drive, see README section 2.
+weights/*.pth
+
+# Local editor / tooling state
+.claude/
+__pycache__/
+*.pyc

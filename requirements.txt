@@ -1,0 +1,17 @@
+# Versions this code is known to run on (conda env: python 3.9).
+# Install torch first, matched to your CUDA, then the rest.
+
+torch==1.13.1+cu116          # --extra-index-url https://download.pytorch.org/whl/cu116
+torchvision==0.14.1+cu116
+mmcv-full==1.7.2             # must be built against the torch/CUDA above
+
+open_clip_torch==2.32.0      # CLIP text encoder -- used at inference, see README
+ftfy==6.3.1                  # open_clip tokenizer dependency
+regex==2024.11.6             # open_clip tokenizer dependency
+timm==1.0.22
+
+numpy==1.26.3
+opencv-python==4.5.1.48
+Pillow==11.0.0
+terminaltables==3.1.10       # result table in tools/eval.py
+matplotlib
