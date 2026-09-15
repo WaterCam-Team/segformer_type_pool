@@ -2,7 +2,6 @@ import os.path as osp
 
 import mmcv
 import numpy as np
-import rasterio
 from ..builder import PIPELINES
 
 
@@ -140,6 +139,9 @@ class Load_5band_ImageFromFile(object):
         # img_bytes = self.file_client.get(filename)
         # img = mmcv.imfrombytes(
             # img_bytes, flag=self.color_type, backend=self.imdecode_backend)
+        # Imported here so the datasets package stays importable without
+        # rasterio, which only this 5-band loader needs.
+        import rasterio
         img = rasterio.open(filename).read()
         img = img.transpose(1,2,0)
         if self.to_float32:

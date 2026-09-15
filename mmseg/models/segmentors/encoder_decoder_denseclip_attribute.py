@@ -123,10 +123,14 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         assert self.with_decode_head
 
     def build_clip(self):
+        # CPU-only deployment: .cuda() here made the model impossible to build
+        # on a machine without a GPU. The text branch is only ever read, so it
+        # runs wherever the rest of the model does.
         clip_model, _, preprocess = open_clip.create_model_and_transforms(
             "ViT-B-16", pretrained="openai")
         tokenizer = open_clip.get_tokenizer("ViT-B-16")
-        clip_model = clip_model.cuda().eval()
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        clip_model = clip_model.to(device).eval()
         return clip_model, tokenizer
     
     def _init_decode_head(self, decode_head):
@@ -647,7 +651,7 @@ class Half_PromptLearner_type_tool(nn.Module):
         context_len: int = 8,
         clip_model=None,
         clip_tokenizer=None,
-        device='cuda'
+        device=None
     ):
         super().__init__()
 
@@ -655,7 +659,7 @@ class Half_PromptLearner_type_tool(nn.Module):
         self.types = ['normal'] + CHALLENGING_TYPES
         # self.C = num_classes
         self.context_len = context_len
-        self.device = device
+        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
 
         assert clip_model is not None
         assert clip_tokenizer is not None
@@ -678,7 +682,7 @@ class Half_PromptLearner_type_tool(nn.Module):
                 self.full_class_names.append(cls)
         # index_to_replace = self.full_class_names.index("dark water")
         # self.full_class_names[index_to_replace] = 'water in dark scene'
-        tokens = self.clip_tokenizer(self.full_class_names[1:]).cuda()  
+        tokens = self.clip_tokenizer(self.full_class_names[1:]).to(self.device)
         with torch.no_grad():
             embedding_type = self.clip_model.encode_text(tokens)
         

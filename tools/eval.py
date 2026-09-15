@@ -58,10 +58,13 @@ def parse_args():
              "prefix. Subsets you do not name are never loaded, so their "
              "data_root in the config can be left as-is.")
     p.add_argument('--gpu-id', type=int, default=0)
+    p.add_argument(
+        '--device', default=None, choices=['cuda', 'cpu'],
+        help='defaults to cuda when available, else cpu')
     return p.parse_args()
 
 
-def build_model(cfg, checkpoint, gpu_id):
+def build_model(cfg, checkpoint, gpu_id, device=None):
     cfg.model.pretrained = None
     cfg.model.train_cfg = None
     model = build_segmentor(cfg.model, test_cfg=cfg.get('test_cfg'))
@@ -72,7 +75,15 @@ def build_model(cfg, checkpoint, gpu_id):
     print(f'iter       : {meta.get("iter")}   saved: {meta.get("time")}')
     print(f'exp_name   : {meta.get("exp_name")}')
     print(f'CLASSES    : {model.CLASSES}\n', flush=True)
-    model = MMDataParallel(model.cuda(gpu_id), device_ids=[gpu_id])
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cuda':
+        model = MMDataParallel(model.cuda(gpu_id), device_ids=[gpu_id])
+    else:
+        # MMDataParallel with device_ids=[] keeps the scatter/gather wrapper the
+        # test loop expects while leaving every tensor on the CPU.
+        model = MMDataParallel(model.cpu(), device_ids=[])
+    print(f'device     : {device}\n', flush=True)
     model.eval()
     return model
 
@@ -147,7 +158,7 @@ def main():
                 chosen.append(key)
         eval_sets = chosen
 
-    model = build_model(cfg, args.checkpoint, args.gpu_id)
+    model = build_model(cfg, args.checkpoint, args.gpu_id, args.device)
 
     summary = {}
     for key in eval_sets:
