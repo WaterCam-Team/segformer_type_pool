@@ -22,6 +22,10 @@ CPU path) and, on the first run, network access: building the model downloads
 CLIP ViT-B/16 (~600 MB) through `open_clip`. Run everything from this directory
 with `PYTHONPATH=.` — `mmseg/` is used in place, not installed.
 
+> **Running on a CPU / Raspberry Pi?** See [`docs/PI_DEPLOYMENT.md`](docs/PI_DEPLOYMENT.md).
+> The `pi-cpu-deploy` branch removes the CUDA and `open_clip` requirements and
+> ships a 65 MB deploy checkpoint, with identical outputs.
+
 ## 1. Download the checkpoint
 
 The checkpoint is 798 MB, too big for a git repo, so it is **not** in here.
