@@ -174,9 +174,12 @@ Steady state at 512x1024, warmup discarded, 3 timed iterations, same input:
 
 13.8x faster than torch on the real pipeline, including JPEG decode, resize,
 normalise, pad, crop and metric accumulation — none of which ONNX accelerates.
-The +0.32 mIoU comes from the pad to a multiple of 32, which gives ONNX a
-slightly larger canvas than torch sees; at 13 images that is inside the noise,
-so read it as no measurable difference rather than an improvement.
+The +0.32 mIoU comes from the pad to a multiple of 32. That was first written
+off as sampling noise; it is not. Measured directly afterwards, on identical
+input ONNX agrees with torch **100.0000%** of the time, while torch agrees with
+*itself* only **99.21%** between padded and unpadded input, the water fraction
+moving about 0.2 points. So the shift is real and caused by the pad, not by the
+conversion — it is simply small on this model. See the caveat below.
 
 Numerically equivalent, not an approximation: max absolute logit difference
 5.5e-05 (fp32 rounding) and **100.0000% argmax agreement** — every pixel's
@@ -210,9 +213,27 @@ argmax agreement**.
 
 > **The ONNX model requires input dimensions divisible by 32**, which is what
 > makes the `scale_factor` substitution valid. `SIZE_DIVISIBILITY: 32` exists
-> in the config for this reason, but the test pipeline currently resizes with
-> `keep_ratio` and no pad step, so arbitrary sizes reach the model. Wiring ONNX
-> into the eval loop needs a pad-to-32 added first.
+> in the config for this reason, but the test pipeline resizes with
+> `keep_ratio` and no pad step, so `OnnxRunner` pads to reach a valid size.
+
+#### Padding is not free
+
+MiT's spatial-reduction attention pools globally, so a padded strip shifts
+predictions across the **whole image**, not just at the border. Measured by
+running torch against torch, with no ONNX involved:
+
+| model | padded vs unpadded | water fraction |
+|---|---|---|
+| type_pool, 40k iters | 99.21% of pixels agree | shifts ~0.2 points |
+| segformer_5band, 100 iters | 94.33% agree | 13.74% → 9.32% |
+
+No padding mode avoids it — replicate and reflect shift it the other way
+(14.8% on the 5-band model). The magnitude tracks how confident the model is,
+which is why a converged model tolerates it and an unconverged one does not.
+
+**Feeding dimensions already divisible by 32 avoids this entirely**, and is the
+right fix for a deployment pipeline: change the resize target rather than pad.
+`OnnxRunner` warns once per run when padding engages.
 
 This is only exportable at all because the text table is a constant buffer. With
 CLIP on the inference path the graph contained a transformer over learned

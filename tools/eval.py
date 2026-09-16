@@ -151,9 +151,25 @@ class OnnxRunner:
 
         # The exported graph substitutes scale_factor for size in the decode
         # head, which is only exact when both dimensions divide by 32.
+        #
+        # MEASURED CAVEAT: the pad is not free. MiT's spatial-reduction
+        # attention pools globally, so a padded strip shifts predictions across
+        # the whole image rather than only at the border. On this model torch
+        # agrees with *itself* 99.21% of the time between padded and unpadded
+        # input (water fraction moving ~0.2 points), which is what the +0.32
+        # mIoU through ONNX actually is -- not sampling noise. The magnitude
+        # tracks model confidence: the 100-iteration 5-band checkpoint in
+        # segformer_5band moves 5.67% of pixels under the same treatment.
+        # Inputs already divisible by 32 avoid it entirely.
         h, w = int(t.shape[2]), int(t.shape[3])
         ph, pw = (-h) % 32, (-w) % 32
         if ph or pw:
+            if not getattr(self, '_warned_pad', False):
+                print(f'  note: inputs not divisible by 32 are padded '
+                      f'(first: {h}x{w} -> {h+ph}x{w+pw}); this shifts '
+                      f'predictions slightly -- see OnnxRunner.__call__',
+                      flush=True)
+                self._warned_pad = True
             t = F.pad(t, (0, pw, 0, ph))   # zeros == the dataset mean, post-Normalize
 
         logits = torch.from_numpy(self.sess.run(None, {'input': t.numpy()})[0])
