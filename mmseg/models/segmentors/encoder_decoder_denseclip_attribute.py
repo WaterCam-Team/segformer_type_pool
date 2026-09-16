@@ -716,19 +716,17 @@ class Half_PromptLearner_type_tool(nn.Module):
         self.register_buffer("classname_emb", embedding)
         self.register_buffer("water_type_emb", embedding_type)
 
-    def forward(self, pixel_feat):
-        # pixel_feat = F.normalize(pixel_feat, dim=1)
-        pixel_global = pixel_feat.mean(dim=[2, 3]) 
-        pixel_global = F.normalize(pixel_global, dim=-1)
-        #### select one #####
-        sim = torch.einsum('bc,nc->bn', pixel_global, self.water_type_emb)
-        # weights = F.softmax(sim / 0.07, dim=-1)
-        # selected = torch.einsum('bn,nd->bd', weights, self.water_type_emb)
-        best_sim, psudo_label = sim.max(dim=1)
-        
+        # Memoised output of _build_text_table(); see text_table().
+        self._text_table_cache = None
+
+    def _build_text_table(self):
+        """Text feature per prompt: (C, clip_out_dim).
+
+        Depends only on prompt_ctx, the registered buffers and the frozen CLIP
+        weights -- never on the image.
+        """
         token_ids = self.token_ids
         classname_emb = self.classname_emb
-        B_cls, L, D = classname_emb.shape
         outputs = []
 
         for ci in range(self.C):
@@ -752,8 +750,45 @@ class Half_PromptLearner_type_tool(nn.Module):
             text_feat = text_feat @ self.clip_model.text_projection
 
             outputs.append(text_feat)
-        outputs = torch.stack(outputs, dim=0)
-        
+        return torch.stack(outputs, dim=0)
+
+    def text_table(self):
+        """_build_text_table(), computed once per eval run.
+
+        Running it per image meant C forward passes of the CLIP text
+        transformer for a result that cannot change -- the dominant cost of
+        CPU inference. Training still recomputes it every step, because
+        prompt_ctx is being learned.
+        """
+        if self.training:
+            return self._build_text_table()
+        if self._text_table_cache is None:
+            with torch.no_grad():
+                self._text_table_cache = self._build_text_table().detach()
+        return self._text_table_cache
+
+    def train(self, mode=True):
+        # Any transition drops the cache: weights or device may have changed.
+        self._text_table_cache = None
+        return super().train(mode)
+
+    def _apply(self, fn):
+        # .to()/.cuda()/.float() must not leave a stale table behind.
+        self._text_table_cache = None
+        return super()._apply(fn)
+
+    def forward(self, pixel_feat):
+        # pixel_feat = F.normalize(pixel_feat, dim=1)
+        pixel_global = pixel_feat.mean(dim=[2, 3]) 
+        pixel_global = F.normalize(pixel_global, dim=-1)
+        #### select one #####
+        sim = torch.einsum('bc,nc->bn', pixel_global, self.water_type_emb)
+        # weights = F.softmax(sim / 0.07, dim=-1)
+        # selected = torch.einsum('bn,nd->bd', weights, self.water_type_emb)
+        best_sim, psudo_label = sim.max(dim=1)
+
+        outputs = self.text_table()
+
         fg_indices = psudo_label + 1          # (bs,) — offset for background
         fg_text = outputs[fg_indices]          # (bs, clip_out_dim)
         bg_text = outputs[0].unsqueeze(0)
