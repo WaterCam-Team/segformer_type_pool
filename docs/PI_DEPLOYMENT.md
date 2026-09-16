@@ -130,6 +130,30 @@ alongside any number:
 
 2.5× faster and 38% less memory, for −1.77 mIoU.
 
+### Dynamic int8 quantization
+
+91% of this model's parameters are `nn.Linear` (15,045,632 of 16,490,852;
+Conv2d is only 8.4%), which is exactly what `torch.quantization.quantize_dynamic`
+covers — no calibration data, no retraining. All 74 Linear layers convert.
+
+| | mIoU | 13 images | per image | peak RSS |
+|---|---|---|---|---|
+| fp32 | 89.19 | 429 s | 33.0 s | 775 MB |
+| int8 dynamic (`qnnpack`) | 89.44 | 353 s | 27.2 s | 718 MB |
+
+**1.22× faster, accuracy unchanged** within the noise of a 13-image sample.
+Enable with `--quantize`.
+
+The gain is real but smaller than the 91% weight coverage suggests, because
+runtime is not distributed like parameters: most of those Linear weights are in
+`context_decoder`, which runs over very few tokens, while the backbone does
+spatial work at high resolution with only 3.3 M parameters. Dynamic
+quantization also pays per-op activation quantize/dequantize overhead, which
+eats into the gain on narrow matrices.
+
+fp16 is not an option on this board: the A72 lacks `asimdhp`, so half precision
+is emulated and would be slower.
+
 ### Parallelism: a negative result
 
 Running several eval processes over disjoint shards was expected to raise

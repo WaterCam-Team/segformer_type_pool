@@ -59,6 +59,9 @@ def parse_args():
              "data_root in the config can be left as-is.")
     p.add_argument('--gpu-id', type=int, default=0)
     p.add_argument(
+        '--quantize', action='store_true',
+        help='apply dynamic int8 quantization to nn.Linear (CPU only)')
+    p.add_argument(
         '--deploy', action='store_true',
         help='checkpoint came from tools/export_deploy.py: no CLIP tower, '
              'prompt table precomputed')
@@ -68,7 +71,8 @@ def parse_args():
     return p.parse_args()
 
 
-def build_model(cfg, checkpoint, gpu_id, device=None, deploy=False):
+def build_model(cfg, checkpoint, gpu_id, device=None, deploy=False,
+                quantize=False):
     cfg.model.pretrained = None
     cfg.model.train_cfg = None
     cfg.model.deploy = deploy
@@ -80,6 +84,23 @@ def build_model(cfg, checkpoint, gpu_id, device=None, deploy=False):
     print(f'iter       : {meta.get("iter")}   saved: {meta.get("time")}')
     print(f'exp_name   : {meta.get("exp_name")}')
     print(f'CLASSES    : {model.CLASSES}\n', flush=True)
+    if quantize:
+        # 91% of this model's parameters are nn.Linear, which is exactly what
+        # dynamic quantization covers -- no calibration data needed.
+        import torch.nn as nn
+        torch.backends.quantized.engine = 'qnnpack'   # ARM
+        classes, palette = model.CLASSES, model.PALETTE
+        model = torch.quantization.quantize_dynamic(
+            model, {nn.Linear}, dtype=torch.qint8)
+        model.CLASSES, model.PALETTE = classes, palette
+        # isinstance, not a name match: the dynamic class is *named* Linear
+        # (torch.nn.quantized.dynamic.modules.linear.Linear), so a substring
+        # test on __name__ silently reports zero.
+        import torch.nn.quantized.dynamic as qd
+        n = sum(1 for m in model.modules() if isinstance(m, qd.Linear))
+        print(f'quantized   : dynamic int8, {n} Linear layers, '
+              f'engine={torch.backends.quantized.engine}')
+
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if device == 'cuda':
@@ -164,7 +185,7 @@ def main():
         eval_sets = chosen
 
     model = build_model(cfg, args.checkpoint, args.gpu_id, args.device,
-                        args.deploy)
+                        args.deploy, args.quantize)
 
     summary = {}
     for key in eval_sets:
