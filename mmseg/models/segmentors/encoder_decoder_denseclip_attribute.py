@@ -120,6 +120,24 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         
         assert self.with_decode_head
 
+    def _release_clip_if_cached(self):
+        """Drop the CLIP text tower once its output has been memoised.
+
+        ~600 MB of the model's footprint is CLIP weights that nothing reads
+        again in eval once the prompt learner has cached its table -- the
+        score map is built from that table alone. Freeing them leaves room to
+        run several eval processes on a memory-constrained device, which is
+        the only parallelism that scales there.
+        """
+        if self.training or self.clip_model is None:
+            return
+        if self.half_prompt_learner._text_table_cache is None:
+            return
+        # Assigning None keeps the attribute readable (and the guards above
+        # working) while dropping the last reference to the weights.
+        self.clip_model = None
+        object.__setattr__(self.half_prompt_learner, 'clip_model', None)
+
     def build_clip(self):
         # Built from the vendored CLIP rather than pulled through open_clip.
         # Every tensor here is overwritten by the checkpoint's own clip_model.*
@@ -201,6 +219,7 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         # text_feat_ori = self.text_encoder(prompts, tokenized_prompts)
         ##### prompt learner ######
         text_feat_ori = self.half_prompt_learner(pixel_feat)
+        self._release_clip_if_cached()
         ###### adding context encoding ######
         B, C, H, W = pixel_feat.shape
         visual_context = torch.cat([F.adaptive_avg_pool2d(pixel_feat, (1, 1)).squeeze(-1), pixel_feat.reshape(B, C, H*W)],dim=2).permute(0, 2, 1)
@@ -725,6 +744,10 @@ class Half_PromptLearner_type_tool(nn.Module):
         Depends only on prompt_ctx, the registered buffers and the frozen CLIP
         weights -- never on the image.
         """
+        if self.clip_model is None:
+            raise RuntimeError(
+                'the CLIP text tower has been released; the prompt table can '
+                'only be built once, before release')
         token_ids = self.token_ids
         classname_emb = self.classname_emb
         outputs = []
@@ -768,14 +791,24 @@ class Half_PromptLearner_type_tool(nn.Module):
         return self._text_table_cache
 
     def train(self, mode=True):
-        # Any transition drops the cache: weights or device may have changed.
-        self._text_table_cache = None
+        # Entering training invalidates the table: prompt_ctx becomes learnable
+        # again. Staying in eval keeps it, since nothing it depends on changes.
+        if mode:
+            if self.clip_model is None:
+                raise RuntimeError(
+                    'the CLIP text tower was released after its table was '
+                    'cached, so this model can no longer be trained; rebuild '
+                    'it to train')
+            self._text_table_cache = None
         return super().train(mode)
 
     def _apply(self, fn):
-        # .to()/.cuda()/.float() must not leave a stale table behind.
-        self._text_table_cache = None
-        return super()._apply(fn)
+        # Move the cached table with everything else rather than dropping it,
+        # so a .to()/.float() after the CLIP tower is released stays valid.
+        out = super()._apply(fn)
+        if self._text_table_cache is not None:
+            self._text_table_cache = fn(self._text_table_cache)
+        return out
 
     def forward(self, pixel_feat):
         # pixel_feat = F.normalize(pixel_feat, dim=1)
