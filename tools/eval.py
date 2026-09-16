@@ -59,6 +59,9 @@ def parse_args():
              "data_root in the config can be left as-is.")
     p.add_argument('--gpu-id', type=int, default=0)
     p.add_argument(
+        '--onnx', default=None,
+        help='run inference through this ONNX model instead of torch')
+    p.add_argument(
         '--quantize', action='store_true',
         help='apply dynamic int8 quantization to nn.Linear (CPU only)')
     p.add_argument(
@@ -112,6 +115,55 @@ def build_model(cfg, checkpoint, gpu_id, device=None, deploy=False,
     print(f'device     : {device}\n', flush=True)
     model.eval()
     return model
+
+
+class OnnxRunner:
+    """ONNX Runtime behind the call signature the eval loop already uses.
+
+    Reproduces what mmseg does after the network: the exported graph stops at
+    the resized input's resolution, so the logits are cropped back from the
+    pad, resized to ori_shape and argmaxed here.
+    """
+
+    def __init__(self, path, align_corners=False):
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        self.sess = ort.InferenceSession(
+            path, so, providers=['CPUExecutionProvider'])
+        self.align_corners = align_corners
+        self.CLASSES = self.PALETTE = None
+
+    def eval(self):
+        return self
+
+    @staticmethod
+    def _meta(img_metas):
+        m = img_metas[0]
+        m = m.data if hasattr(m, 'data') else m       # unwrap DataContainer
+        while isinstance(m, (list, tuple)):
+            m = m[0]
+        return m
+
+    def __call__(self, return_loss=False, img=None, img_metas=None, **kw):
+        import torch.nn.functional as F
+        t = img[0] if isinstance(img, (list, tuple)) else img
+        meta = self._meta(img_metas)
+
+        # The exported graph substitutes scale_factor for size in the decode
+        # head, which is only exact when both dimensions divide by 32.
+        h, w = int(t.shape[2]), int(t.shape[3])
+        ph, pw = (-h) % 32, (-w) % 32
+        if ph or pw:
+            t = F.pad(t, (0, pw, 0, ph))   # zeros == the dataset mean, post-Normalize
+
+        logits = torch.from_numpy(self.sess.run(None, {'input': t.numpy()})[0])
+        if ph or pw:
+            logits = logits[:, :, :h, :w]
+
+        oh, ow = meta['ori_shape'][:2]
+        logits = F.interpolate(logits, size=(oh, ow), mode='bilinear',
+                               align_corners=self.align_corners)
+        return [logits.argmax(1)[0].numpy().astype(np.uint8)]
 
 
 def evaluate_subset(model, dataset_cfg, workers, squeeze_rgb_gt):
@@ -184,8 +236,15 @@ def main():
                 chosen.append(key)
         eval_sets = chosen
 
-    model = build_model(cfg, args.checkpoint, args.gpu_id, args.device,
-                        args.deploy, args.quantize)
+    if args.onnx:
+        model = OnnxRunner(args.onnx, cfg.model.decode_head.align_corners)
+        meta = torch.load(args.checkpoint, map_location='cpu').get('meta', {})
+        model.CLASSES, model.PALETTE = meta.get('CLASSES'), meta.get('PALETTE')
+        print(f'\nonnx       : {args.onnx}')
+        print(f'CLASSES    : {model.CLASSES}\n', flush=True)
+    else:
+        model = build_model(cfg, args.checkpoint, args.gpu_id, args.device,
+                            args.deploy, args.quantize)
 
     summary = {}
     for key in eval_sets:

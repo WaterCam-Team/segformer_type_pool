@@ -164,6 +164,20 @@ Steady state at 512x1024, warmup discarded, 3 timed iterations, same input:
 | torch int8 dynamic | 45.01 s ± 2.21 | 1.12× |
 | **onnxruntime 1.19.2** | **2.69 s ± 0.06** | **18.73×** |
 
+**End to end through `tools/eval.py --onnx`, the full 13-image subset:**
+
+| backend | mIoU | 13 images | per image |
+|---|---|---|---|
+| torch fp32 | 89.19 | 429 s | 33.0 s |
+| torch int8 dynamic | 89.44 | 353 s | 27.2 s |
+| **ONNX Runtime** | **89.51** | **31 s** | **2.4 s** |
+
+13.8x faster than torch on the real pipeline, including JPEG decode, resize,
+normalise, pad, crop and metric accumulation — none of which ONNX accelerates.
+The +0.32 mIoU comes from the pad to a multiple of 32, which gives ONNX a
+slightly larger canvas than torch sees; at 13 images that is inside the noise,
+so read it as no measurable difference rather than an improvement.
+
 Numerically equivalent, not an approximation: max absolute logit difference
 5.5e-05 (fp32 rounding) and **100.0000% argmax agreement** — every pixel's
 predicted class identical to torch's.
