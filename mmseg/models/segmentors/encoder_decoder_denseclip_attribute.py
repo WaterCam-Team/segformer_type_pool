@@ -7,8 +7,6 @@ from mmseg.ops import resize
 from .. import builder
 from ..builder import SEGMENTORS
 from .base import BaseSegmentor
-import open_clip
-import clip
 import json
 CHALLENGING_TYPES = ['transparent', 'shallow', 'reflection', 'glare', 'dark', 'muddy', 'rainy', 'blurry']
 
@@ -123,15 +121,29 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         assert self.with_decode_head
 
     def build_clip(self):
-        # CPU-only deployment: .cuda() here made the model impossible to build
-        # on a machine without a GPU. The text branch is only ever read, so it
-        # runs wherever the rest of the model does.
-        clip_model, _, preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-16", pretrained="openai")
-        tokenizer = open_clip.get_tokenizer("ViT-B-16")
+        # Built from the vendored CLIP rather than pulled through open_clip.
+        # Every tensor here is overwritten by the checkpoint's own clip_model.*
+        # weights, so the 600 MB pretrained download only ever served to
+        # allocate them at the right shapes -- which these ViT-B/16 hyper-
+        # parameters do offline, with no open_clip and no network. Likewise
+        # the tokenizer: its outputs land in registered buffers that the
+        # checkpoint also overwrites.
+        from mmseg.models.clip.clip import tokenize
+        from mmseg.models.clip.model import CLIP
+        clip_model = CLIP(
+            embed_dim=512,
+            image_resolution=224,
+            vision_layers=12,
+            vision_width=768,
+            vision_patch_size=16,
+            context_length=77,
+            vocab_size=49408,
+            transformer_width=512,
+            transformer_heads=8,
+            transformer_layers=12)
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         clip_model = clip_model.to(device).eval()
-        return clip_model, tokenizer
+        return clip_model, tokenize
     
     def _init_decode_head(self, decode_head):
         """Initialize ``decode_head``"""
@@ -267,6 +279,7 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         return x_orig, score_map
     
     def encode_text_list(self, fixed_prompts):
+        import clip
         bg_prompts = []
         water_prompts = []
         for text in fixed_prompts:
@@ -581,6 +594,7 @@ class Half_CoOpPromptLearner_type_pool(nn.Module):
         
         self.types = ['normal'] + CHALLENGING_TYPES
         self.types_with_water = [t + ' water' for t in self.types]
+        import clip
         type_tokens = clip.tokenize(self.types_with_water).to(device)
         with torch.no_grad():
             self.embedding_type = clip_model.encode_text(type_tokens).type(dtype)
@@ -616,6 +630,7 @@ class Half_CoOpPromptLearner_type_pool(nn.Module):
         ### bg is not fixed ###
         bg_prompts = [' '.join(['X'] * self.n_ctx) + ", the background of water"]
         ###########
+        import clip
         fg_tokenized = clip.tokenize(fg_prompts).to(self.device)
         bg_tokenized = clip.tokenize(bg_prompts).to(self.device)
 
@@ -761,6 +776,7 @@ class Difficulty_PromptLearner(nn.Module):
         self.context_len = context_len
         self.device = device
         
+        import open_clip
         clip_model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-16", pretrained="openai")
         clip_tokenizer = open_clip.get_tokenizer("ViT-B-16")
         clip_model = clip_model.cuda().eval()

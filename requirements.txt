@@ -5,9 +5,12 @@ torch==1.13.1+cu116          # --extra-index-url https://download.pytorch.org/wh
 torchvision==0.14.1+cu116
 mmcv-full==1.7.2             # must be built against the torch/CUDA above
 
-open_clip_torch==2.32.0      # CLIP text encoder -- used at inference, see README
-ftfy==6.3.1                  # open_clip tokenizer dependency
-regex==2024.11.6             # open_clip tokenizer dependency
+# open_clip is NO LONGER REQUIRED. The CLIP text tower is built from the
+# vendored mmseg/models/clip and its weights come from the checkpoint, so
+# nothing is downloaded. Only the unused Difficulty_PromptLearner still
+# imports it, lazily.
+ftfy==6.3.1                  # vendored CLIP tokenizer dependency
+regex==2024.11.6             # vendored CLIP tokenizer dependency
 timm==1.0.22
 
 numpy==1.26.3
