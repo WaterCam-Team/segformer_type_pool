@@ -154,6 +154,44 @@ eats into the gain on narrow matrices.
 fp16 is not an option on this board: the A72 lacks `asimdhp`, so half precision
 is emulated and would be slower.
 
+### ONNX Runtime — the largest win by far
+
+Steady state at 512x1024, warmup discarded, 3 timed iterations, same input:
+
+| backend | per image | vs fp32 |
+|---|---|---|
+| torch fp32 | 50.44 s ± 0.11 | — |
+| torch int8 dynamic | 45.01 s ± 2.21 | 1.12× |
+| **onnxruntime 1.19.2** | **2.69 s ± 0.06** | **18.73×** |
+
+Numerically equivalent, not an approximation: max absolute logit difference
+5.5e-05 (fp32 rounding) and **100.0000% argmax agreement** — every pixel's
+predicted class identical to torch's.
+
+The gap is this large because the environment's torch is 1.7.1, built for
+aarch64 in December 2020 without modern ARM GEMM kernels, while ONNX Runtime
+1.19.2 has tuned ARM64 kernels and fuses operators across the graph. Fusion
+attacks the memory-bandwidth bound directly, which is why it succeeds where
+threading, multiprocessing and quantization all gave little.
+
+Export it with `tools/export_onnx.py`. Two caveats:
+
+- **`--no-fold` is required.** torch 1.7's constant folding turns
+  `outputs[0].unsqueeze(0)` in the prompt learner into a rank-3 `(1, 1, 512)`
+  initializer, which breaks the `Concat` that joins it to the per-image
+  foreground features. The cleaner fix is rewriting that line as
+  `outputs[0:1]`, which keeps rank 2.
+- **The graph is static at the traced size.** `--dynamic` produces the same
+  rank error, because several shapes are computed as Python ints
+  (`text_feat_ori[:B]`, `size = tuple(int(x) for x in size)`) and bake in as
+  constants. Using ONNX in the eval pipeline, which resizes each image under
+  `keep_ratio`, needs those rewritten to stay symbolic — or every input
+  resized to one fixed size, which changes what the model sees.
+
+This is only exportable at all because the text table is a constant buffer. With
+CLIP on the inference path the graph contained a transformer over learned
+prompts run per image.
+
 ### Parallelism: a negative result
 
 Running several eval processes over disjoint shards was expected to raise
