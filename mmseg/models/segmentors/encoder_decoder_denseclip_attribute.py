@@ -231,7 +231,10 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         self._release_clip_if_cached()
         ###### adding context encoding ######
         B, C, H, W = pixel_feat.shape
-        visual_context = torch.cat([F.adaptive_avg_pool2d(pixel_feat, (1, 1)).squeeze(-1), pixel_feat.reshape(B, C, H*W)],dim=2).permute(0, 2, 1)
+        # flatten(2) rather than reshape(B, C, H*W): the latter bakes the traced
+        # spatial size in as a constant, so an ONNX export only works at that
+        # one resolution.
+        visual_context = torch.cat([F.adaptive_avg_pool2d(pixel_feat, (1, 1)).squeeze(-1), pixel_feat.flatten(2)],dim=2).permute(0, 2, 1)
         fg_text = text_feat_ori[:B]          # (bs, C)  — one per image
         bg_text = text_feat_ori[B:]          # (1, C)   — shared background
         bg_text = bg_text.expand(B, -1)   # (bs, C)
@@ -876,7 +879,10 @@ class Half_PromptLearner_type_tool(nn.Module):
 
         fg_indices = psudo_label + 1          # (bs,) — offset for background
         fg_text = outputs[fg_indices]          # (bs, clip_out_dim)
-        bg_text = outputs[0].unsqueeze(0)
+        # outputs[0:1], not outputs[0].unsqueeze(0): identical value, but the
+        # unsqueeze form constant-folds to a rank-3 (1, 1, 512) initializer in
+        # torch 1.7's ONNX exporter and breaks the Concat below.
+        bg_text = outputs[0:1]
         # Stack: (bs, 2, clip_out_dim) — [bg, fg] per image
         selected_text_feat = torch.cat([fg_text, bg_text], dim=0) 
         return selected_text_feat

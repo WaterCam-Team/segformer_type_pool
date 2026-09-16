@@ -174,19 +174,31 @@ aarch64 in December 2020 without modern ARM GEMM kernels, while ONNX Runtime
 attacks the memory-bandwidth bound directly, which is why it succeeds where
 threading, multiprocessing and quantization all gave little.
 
-Export it with `tools/export_onnx.py`. Two caveats:
+Export it with `tools/export_onnx.py --dynamic`. Three separate things pinned
+the graph to its traced resolution, each fixed differently:
 
-- **`--no-fold` is required.** torch 1.7's constant folding turns
-  `outputs[0].unsqueeze(0)` in the prompt learner into a rank-3 `(1, 1, 512)`
-  initializer, which breaks the `Concat` that joins it to the per-image
-  foreground features. The cleaner fix is rewriting that line as
-  `outputs[0:1]`, which keeps rank 2.
-- **The graph is static at the traced size.** `--dynamic` produces the same
-  rank error, because several shapes are computed as Python ints
-  (`text_feat_ori[:B]`, `size = tuple(int(x) for x in size)`) and bake in as
-  constants. Using ONNX in the eval pipeline, which resizes each image under
-  `keep_ratio`, needs those rewritten to stay symbolic — or every input
-  resized to one fixed size, which changes what the model sees.
+| cause | fix |
+|---|---|
+| `outputs[0].unsqueeze(0)` constant-folds to a rank-3 `(1, 1, 512)` initializer under torch 1.7, breaking a `Concat` | `outputs[0:1]` — same value, keeps rank 2 |
+| `pixel_feat.reshape(B, C, H*W)` bakes the traced spatial size | `pixel_feat.flatten(2)` |
+| the decode head resizes `_c4/_c3/_c2` to `size=c1.size()[2:]`, which `mmseg.ops.resize` turns into Python ints | `scale_factor`, **applied during tracing only** |
+
+The first two are edits to the model; both are value-identical and the eval
+still returns 89.19. The third is *not* — for input dimensions not divisible
+by 32, ceil division in the strided convolutions makes `scale_factor` and
+`size` differ by a pixel, so changing the head would alter torch's own output.
+`patch_resize_for_export()` therefore confines that substitution to the
+exported graph, and only where the ratio is exactly integral.
+
+Verified at a resolution never traced: exported at 512x1024, run at 384x640,
+output shape `(1, 2, 384, 640)`, max logit difference 6.7e-05, **100.0000%
+argmax agreement**.
+
+> **The ONNX model requires input dimensions divisible by 32**, which is what
+> makes the `scale_factor` substitution valid. `SIZE_DIVISIBILITY: 32` exists
+> in the config for this reason, but the test pipeline currently resizes with
+> `keep_ratio` and no pad step, so arbitrary sizes reach the model. Wiring ONNX
+> into the eval loop needs a pad-to-32 added first.
 
 This is only exportable at all because the text table is a constant buffer. With
 CLIP on the inference path the graph contained a transformer over learned
