@@ -130,6 +130,37 @@ alongside any number:
 
 2.5× faster and 38% less memory, for −1.77 mIoU.
 
+### Parallelism: a negative result
+
+Running several eval processes over disjoint shards was expected to raise
+throughput, on the reasoning that intra-op threading scales poorly here. It
+does not. Every configuration is **slower** than a single process:
+
+| configuration | wall (13 images) | combined peak RSS |
+|---|---|---|
+| **1 process × 4 threads** | **429 s** | 775 MB |
+| 2 processes × 2 threads | 441 s | 2196 MB |
+| 4 processes × 1 thread | 451 s | 4392 MB |
+| 4 processes × 4 threads | 462 s | 3581 MB |
+
+Thread oversubscription is not the explanation: giving each process a single
+thread changed almost nothing. The workload is bound by memory bandwidth, and
+more processes do not add bandwidth. The Pi 4's LPDDR4 saturates before its
+four A72 cores do — the same ceiling reached from the other direction by the
+2-to-4 thread scaling measured on this board (1.34×, not 2×).
+
+**So on this hardware, throughput is fixed.** The only levers are doing less
+work (the caching in `17af54b`) or feeding smaller inputs (resolution above).
+Neither threads nor processes help.
+
+This corrects a claim made earlier in this branch's development — that
+process-level parallelism was the form that would scale here. It was asserted
+before it was measured, and measurement refutes it. The memory work in
+`08ba3b3` and `4cfa816` is still worthwhile: a smaller resident footprint
+leaves room for the capture pipeline and other workloads to coexist on the
+device, and it removes the OOM risk a 1221 MB peak carried on a 3.7 GiB board.
+It just does not buy throughput.
+
 ## Limits
 
 - **Not 5-band.** `mix_transformer.py:213` passes a literal `in_chans=3` and
