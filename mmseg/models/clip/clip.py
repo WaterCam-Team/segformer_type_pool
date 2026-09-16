@@ -5,18 +5,17 @@ import warnings
 from typing import Union, List
 
 import torch
-from PIL import Image
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-from tqdm import tqdm
 
 from .model import build_model
 from .simple_tokenizer import SimpleTokenizer as _Tokenizer
 
-try:
-    from torchvision.transforms import InterpolationMode
-    BICUBIC = InterpolationMode.BICUBIC
-except ImportError:
-    BICUBIC = Image.BICUBIC
+def _bicubic():
+    try:
+        from torchvision.transforms import InterpolationMode
+        return InterpolationMode.BICUBIC
+    except ImportError:
+        from PIL import Image
+        return Image.BICUBIC
 
 
 if torch.__version__.split(".") < ["1", "7", "1"]:
@@ -52,6 +51,7 @@ def _download(url: str, root: str = os.path.expanduser("./cache/clip")):
         else:
             warnings.warn(f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
 
+    from tqdm import tqdm
     with urllib.request.urlopen(url) as source, open(download_target, "wb") as output:
         with tqdm(total=int(source.info().get("Content-Length")), ncols=80, unit='iB', unit_scale=True) as loop:
             while True:
@@ -69,8 +69,10 @@ def _download(url: str, root: str = os.path.expanduser("./cache/clip")):
 
 
 def _transform(n_px):
+    from torchvision.transforms import (Compose, Resize, CenterCrop, ToTensor,
+                                        Normalize)
     return Compose([
-        Resize(n_px, interpolation=BICUBIC),
+        Resize(n_px, interpolation=_bicubic()),
         CenterCrop(n_px),
         lambda image: image.convert("RGB"),
         ToTensor(),

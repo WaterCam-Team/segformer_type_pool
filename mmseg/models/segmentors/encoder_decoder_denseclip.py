@@ -7,8 +7,6 @@ from mmseg.ops import resize
 from .. import builder
 from ..builder import SEGMENTORS
 from .base import BaseSegmentor
-import open_clip
-import clip
 import json
 CHALLENGING_TYPES = ['transparent', 'shallow', 'reflection', 'glare', 'dark', 'muddy', 'rainy', 'blurry']
 
@@ -57,6 +55,7 @@ class EncoderDecoder_denseclip(BaseSegmentor):
         # self.clip_model, _ = clip.load("ViT-B/16", device=self.device)
         # self.clip_model = self.clip_model.float()
         # self.clip_model.eval()
+        import clip
         clip_model, _ = clip.load("ViT-B/16", device=self.device)
         clip_model = clip_model.float()
         clip_model.eval()
@@ -137,6 +136,7 @@ class EncoderDecoder_denseclip(BaseSegmentor):
         assert self.with_decode_head
 
     def build_clip(self):
+        import open_clip
         clip_model, _, preprocess = open_clip.create_model_and_transforms(
             "ViT-B-16", pretrained="openai")
         tokenizer = open_clip.get_tokenizer("ViT-B-16")
@@ -340,6 +340,7 @@ class EncoderDecoder_denseclip(BaseSegmentor):
             bg_prompts.append(res1)
             water_prompts.append(res2)
         # tokenize
+        import clip
         bg_tokens = clip.tokenize(bg_prompts).to(self.device)
         water_tokens = clip.tokenize(water_prompts).to(self.device)
 
@@ -639,6 +640,7 @@ class CoOpPromptLearner(nn.Module):
         for K in K_per_cls:
             if ctx_init:
                 ctx_init = ctx_init.replace("_", " ")
+                import clip
                 tokens = clip.tokenize(ctx_init).to(device)
                 with torch.no_grad():
                     embedding = clip_model.token_embedding(tokens).type(dtype)

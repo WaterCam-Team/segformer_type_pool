@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import clip  # from OpenAI CLIP repo
 
 class CustomPrompt(nn.Module):
     def __init__(self, clip_model, class_name='water', n_ctx=16, position='middle'):
@@ -9,6 +8,8 @@ class CustomPrompt(nn.Module):
         self.class_name = class_name
         self.position = position
         self.n_ctx = n_ctx
+        import clip  # from OpenAI CLIP repo; imported lazily so that
+        # merely importing mmseg.models does not require it
         self.tokenizer = clip.tokenize
         self.ctx_dim = clip_model.token_embedding.embedding_dim
         self.dtype = clip_model.dtype
@@ -84,6 +85,7 @@ class CustomPrompt(nn.Module):
 
 if __name__ == '__main__':
     # Example usage
+    import clip
     device = "cuda" if torch.cuda.is_available() else "cpu"
     clip_model, preprocess = clip.load("ViT-B/16", device=device)
     coop_prompt = CustomPrompt(clip_model, class_name="water", n_ctx=16, position="end").to(device)
