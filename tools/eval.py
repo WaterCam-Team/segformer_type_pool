@@ -59,14 +59,19 @@ def parse_args():
              "data_root in the config can be left as-is.")
     p.add_argument('--gpu-id', type=int, default=0)
     p.add_argument(
+        '--deploy', action='store_true',
+        help='checkpoint came from tools/export_deploy.py: no CLIP tower, '
+             'prompt table precomputed')
+    p.add_argument(
         '--device', default=None, choices=['cuda', 'cpu'],
         help='defaults to cuda when available, else cpu')
     return p.parse_args()
 
 
-def build_model(cfg, checkpoint, gpu_id, device=None):
+def build_model(cfg, checkpoint, gpu_id, device=None, deploy=False):
     cfg.model.pretrained = None
     cfg.model.train_cfg = None
+    cfg.model.deploy = deploy
     model = build_segmentor(cfg.model, test_cfg=cfg.get('test_cfg'))
     meta = load_checkpoint(model, checkpoint, map_location='cpu')['meta']
     model.CLASSES = meta['CLASSES']
@@ -158,7 +163,8 @@ def main():
                 chosen.append(key)
         eval_sets = chosen
 
-    model = build_model(cfg, args.checkpoint, args.gpu_id, args.device)
+    model = build_model(cfg, args.checkpoint, args.gpu_id, args.device,
+                        args.deploy)
 
     summary = {}
     for key in eval_sets:

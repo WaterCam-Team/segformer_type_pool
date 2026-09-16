@@ -31,8 +31,13 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
                  identity_head=None,
                  train_cfg=None,
                  test_cfg=None,
-                 pretrained=None):
+                 pretrained=None,
+                 deploy=False):
         super(EncoderDecoder_denseclip_attribute, self).__init__()
+        # deploy=True pairs with a checkpoint from tools/export_deploy.py: the
+        # CLIP text tower is absent and the prompt table is a stored buffer,
+        # so the tower is never built and its 571 MB never allocated.
+        self.deploy = deploy
         self.backbone = builder.build_backbone(backbone)
         if neck is not None:
             self.neck = builder.build_neck(neck)
@@ -79,9 +84,12 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         # self.text_encoder = TextEncoder(clip_model)
         ### difficulty prompt learner#####
         self.device = "cuda"
-        self.clip_model, self.clip_tokenizer = self.build_clip()
-        for p in self.clip_model.parameters():
-            p.requires_grad = False
+        if deploy:
+            self.clip_model, self.clip_tokenizer = None, None
+        else:
+            self.clip_model, self.clip_tokenizer = self.build_clip()
+            for p in self.clip_model.parameters():
+                p.requires_grad = False
         # self._clip_model_ref = [self.clip_model]  # list is not registered by nn.Module
         # del self.clip_model
         # self.prompt_learner = Difficulty_PromptLearner(
@@ -89,7 +97,8 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         self.half_prompt_learner = Half_PromptLearner_type_tool(
             class_names=classnames,
             clip_model=self.clip_model,
-            clip_tokenizer=self.clip_tokenizer)
+            clip_tokenizer=self.clip_tokenizer,
+            deploy=deploy)
         
         ### adding context encoder ###
         # self.context_decoder = ContextDecoder()
@@ -129,7 +138,7 @@ class EncoderDecoder_denseclip_attribute(BaseSegmentor):
         run several eval processes on a memory-constrained device, which is
         the only parallelism that scales there.
         """
-        if self.training or self.clip_model is None:
+        if self.deploy or self.training or self.clip_model is None:
             return
         if self.half_prompt_learner._text_table_cache is None:
             return
@@ -685,7 +694,8 @@ class Half_PromptLearner_type_tool(nn.Module):
         context_len: int = 8,
         clip_model=None,
         clip_tokenizer=None,
-        device=None
+        device=None,
+        deploy=False
     ):
         super().__init__()
 
@@ -694,6 +704,11 @@ class Half_PromptLearner_type_tool(nn.Module):
         # self.C = num_classes
         self.context_len = context_len
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.deploy = deploy
+
+        if deploy:
+            self._init_deploy(class_names, context_len)
+            return
 
         assert clip_model is not None
         assert clip_tokenizer is not None
@@ -738,6 +753,41 @@ class Half_PromptLearner_type_tool(nn.Module):
         # Memoised output of _build_text_table(); see text_table().
         self._text_table_cache = None
 
+    def _init_deploy(self, class_names, context_len):
+        """Allocate the same buffers without CLIP, for a stripped checkpoint.
+
+        Shapes are fixed by ViT-B/16 (512-d text width, 77-token context) and
+        by the type list, so they can be declared without the tower that
+        originally produced their contents. Every one is overwritten by the
+        checkpoint; only text_table is actually read at inference.
+        """
+        clip_ctx_dim = clip_out_dim = 512
+        context_length = 77
+        self.clip_ctx_dim = clip_ctx_dim
+        self.clip_out_dim = clip_out_dim
+
+        self.full_class_names = []
+        for cls in class_names:
+            if cls == "water":
+                self.full_class_names.extend([f"{t} water" for t in self.types])
+            else:
+                self.full_class_names.append(cls)
+        self.C = len(self.full_class_names)
+        self.prefix = " ".join(["X"] * context_len) + " "
+
+        self.prompt_ctx = nn.Parameter(
+            torch.zeros(self.C, context_len, clip_ctx_dim))
+        self.register_buffer(
+            "token_ids", torch.zeros(self.C, context_length, dtype=torch.long))
+        self.register_buffer(
+            "classname_emb",
+            torch.zeros(self.C, context_length, clip_ctx_dim))
+        self.register_buffer(
+            "water_type_emb", torch.zeros(self.C - 1, clip_out_dim))
+        # The precomputed table -- the only one of these the forward pass reads.
+        self.register_buffer("text_table", torch.zeros(self.C, clip_out_dim))
+        self._text_table_cache = None
+
     def _build_text_table(self):
         """Text feature per prompt: (C, clip_out_dim).
 
@@ -775,7 +825,7 @@ class Half_PromptLearner_type_tool(nn.Module):
             outputs.append(text_feat)
         return torch.stack(outputs, dim=0)
 
-    def text_table(self):
+    def text_features(self):
         """_build_text_table(), computed once per eval run.
 
         Running it per image meant C forward passes of the CLIP text
@@ -783,6 +833,8 @@ class Half_PromptLearner_type_tool(nn.Module):
         CPU inference. Training still recomputes it every step, because
         prompt_ctx is being learned.
         """
+        if self.deploy:
+            return self.text_table
         if self.training:
             return self._build_text_table()
         if self._text_table_cache is None:
@@ -794,7 +846,7 @@ class Half_PromptLearner_type_tool(nn.Module):
         # Entering training invalidates the table: prompt_ctx becomes learnable
         # again. Staying in eval keeps it, since nothing it depends on changes.
         if mode:
-            if self.clip_model is None:
+            if self.deploy or self.clip_model is None:
                 raise RuntimeError(
                     'the CLIP text tower was released after its table was '
                     'cached, so this model can no longer be trained; rebuild '
@@ -820,7 +872,7 @@ class Half_PromptLearner_type_tool(nn.Module):
         # selected = torch.einsum('bn,nd->bd', weights, self.water_type_emb)
         best_sim, psudo_label = sim.max(dim=1)
 
-        outputs = self.text_table()
+        outputs = self.text_features()
 
         fg_indices = psudo_label + 1          # (bs,) — offset for background
         fg_text = outputs[fg_indices]          # (bs, clip_out_dim)
