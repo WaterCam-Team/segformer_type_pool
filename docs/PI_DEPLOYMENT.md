@@ -222,14 +222,19 @@ MiT's spatial-reduction attention pools globally, so a padded strip shifts
 predictions across the **whole image**, not just at the border. Measured by
 running torch against torch, with no ONNX involved:
 
-| model | padded vs unpadded | water fraction |
-|---|---|---|
-| type_pool, 40k iters | 99.21% of pixels agree | shifts ~0.2 points |
-| segformer_5band, 100 iters | 94.33% agree | 13.74% → 9.32% |
+| model | sample | padded vs unpadded | water fraction shift |
+|---|---|---|---|
+| type_pool, 40k iters | 3 images | 99.21% of pixels agree | ~0.2 points |
+| segformer_5band, 100 iters | **64 images** | mean 96.73% (range 91.37–98.79%) | mean +0.89 pts (range −3.85 to +4.88); 39 of 64 move > 1 pt |
 
-No padding mode avoids it — replicate and reflect shift it the other way
-(14.8% on the 5-band model). The magnitude tracks how confident the model is,
-which is why a converged model tolerates it and an unconverged one does not.
+The direction is **not** systematic — it moves both ways depending on content,
+and no padding mode avoids it; replicate and reflect simply bias differently.
+The magnitude tracks how confident the model is, which is why a converged model
+tolerates it and an unconverged one does not.
+
+Over those same 64 real captures the conversion itself is confirmed exact:
+ONNX against torch on identical input agrees **99.9999%** on average, worst case
+99.9994%, at **19.8×** the speed (29.7 s → 1.50 s per image).
 
 **Feeding dimensions already divisible by 32 avoids this entirely**, and is the
 right fix for a deployment pipeline: change the resize target rather than pad.
